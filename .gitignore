@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Environment variables & local secrets
+.env
+.env.local
+backend/.env
+
+# Production builds
+dist/
+*/dist/
+
+# SQLite local databases and write-ahead logs
+backend/data/*.db
+backend/data/*.db-wal
+backend/data/*.db-shm
+*.sqlite
+
+# Logs
+*.log
+npm-debug.log*
+
+# System & IDE files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
