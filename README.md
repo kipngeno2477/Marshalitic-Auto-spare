@@ -42,9 +42,9 @@
   - Manager (Purchases, sales, reports, adjustments)
   - Cashier (POS checkout, customer registry, receipts)
   - Storekeeper (Warehouse stock intake and adjustments)
-- **Database Engine Dual-Support**:
-  - Production-ready MySQL 8.0+ schema (`backend/src/database/schema.sql`).
-  - Built-in zero-dependency embedded database (`backend/data/mashalitic.db`) for instant turnkey execution without external daemon dependencies.
+- **Database Engine**:
+  - High-performance, scalable **MongoDB** database (`mongodb://127.0.0.1:27017/mashalitic_db`).
+  - Automatic indexing, atomic sequence counters, and high-throughput document collections.
 - **Disaster Recovery**:
   - Instant one-click full database JSON snapshot export and download.
 
@@ -54,7 +54,7 @@
 
 - **Frontend**: React 18, Vite, Tailwind CSS, Lucide React, Recharts, React Router v6, React Hot Toast, SheetJS (XLSX).
 - **Backend**: Node.js, Express.js, REST API architecture, JWT authentication, Bcrypt password hashing.
-- **Database**: MySQL 8.0+ / High-Performance SQLite, atomic ACID transactions, foreign keys, and indexes.
+- **Database**: MongoDB (Official `mongodb` driver, auto-indexing, ACID atomic sequences).
 - **Integrations**: Safaricom M-Pesa Daraja API (STK Push with live credential handling & sandbox test simulation).
 
 ---
@@ -74,8 +74,8 @@
 
 ### Prerequisites
 - Node.js (v18 or higher; tested on Node v24)
+- MongoDB Server (v7.0+ or v8.0+, running locally on port 27017 or remote connection string)
 - npm or pnpm
-- (Optional) MySQL 8.0+ (if running MySQL instead of the built-in SQLite engine)
 
 ### Step 1: Backend Setup
 ```bash

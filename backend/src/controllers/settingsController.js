@@ -6,9 +6,10 @@ const { logActivity } = require('../middleware/auditLogger');
 // 1. Get Settings
 exports.getSettings = async (req, res) => {
   try {
-    const result = await db.query('SELECT setting_key, setting_value, description FROM shop_settings');
+    const settingsCol = db.getCollection('shop_settings');
+    const settings = await settingsCol.find({}).toArray();
     const settingsMap = {};
-    result.rows.forEach(r => {
+    settings.forEach(r => {
       settingsMap[r.setting_key] = r.setting_value;
     });
     res.json({ success: true, data: settingsMap });
@@ -20,21 +21,24 @@ exports.getSettings = async (req, res) => {
 // 2. Update Settings
 exports.updateSettings = async (req, res) => {
   try {
-    const settings = req.body; // key-value object
+    const settings = req.body;
+    const settingsCol = db.getCollection('shop_settings');
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
 
     for (const [key, val] of Object.entries(settings)) {
-      try {
-        await db.query(
-          `INSERT OR REPLACE INTO shop_settings (setting_key, setting_value) VALUES (?, ?)`,
-          [key, String(val)]
-        );
-      } catch (e) {
-        await db.query(
-          `INSERT INTO shop_settings (setting_key, setting_value) VALUES (?, ?)
-           ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)`,
-          [key, String(val)]
-        );
-      }
+      await settingsCol.updateOne(
+        { setting_key: key },
+        {
+          $set: {
+            setting_value: String(val),
+            updated_at: now
+          },
+          $setOnInsert: {
+            description: 'System preference setting'
+          }
+        },
+        { upsert: true }
+      );
     }
 
     await logActivity(req.user ? req.user.id : 1, 'SETTINGS_UPDATE', 'Settings', 'Updated system preferences');
@@ -56,17 +60,21 @@ exports.createBackup = async (req, res) => {
     const backupFileName = `backup_mashalitic_${timestamp}.json`;
     const backupFilePath = path.join(backupDir, backupFileName);
 
-    // Export all critical tables to JSON backup snapshot
-    const tables = ['users', 'categories', 'brands', 'vehicles', 'products', 'product_vehicle_compatibility', 'customers', 'suppliers', 'sales', 'sale_items', 'payments', 'purchases', 'purchase_items', 'expenses', 'stock_movements', 'returns', 'shop_settings'];
+    const collections = [
+      'users', 'categories', 'brands', 'vehicles', 'products',
+      'product_vehicle_compatibility', 'customers', 'suppliers',
+      'sales', 'sale_items', 'payments', 'purchases', 'purchase_items',
+      'expenses', 'stock_movements', 'returns', 'return_items',
+      'shop_settings', 'audit_logs', 'notifications'
+    ];
 
     const snapshot = {};
-    for (const tbl of tables) {
-      const data = await db.query(`SELECT * FROM ${tbl}`);
-      snapshot[tbl] = data.rows;
+    const database = db.getDb();
+    for (const colName of collections) {
+      snapshot[colName] = await database.collection(colName).find({}, { projection: { _id: 0 } }).toArray();
     }
 
     fs.writeFileSync(backupFilePath, JSON.stringify(snapshot, null, 2), 'utf8');
-
     await logActivity(req.user ? req.user.id : 1, 'BACKUP_CREATE', 'System', `Created backup snapshot: ${backupFileName}`);
 
     res.json({

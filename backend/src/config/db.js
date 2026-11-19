@@ -1,179 +1,159 @@
-const fs = require('fs');
-const path = require('path');
+const { MongoClient } = require('mongodb');
 const dotenv = require('dotenv');
+const dns = require('dns');
 
 dotenv.config();
 
-const DB_CLIENT = process.env.DB_CLIENT || 'sqlite'; // 'mysql' or 'sqlite'
-let pool = null;
-let sqliteDb = null;
+// Fix for Windows Node.js SRV record lookup with MongoDB Atlas
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1']);
+} catch (e) {}
 
-// Helper to sanitize parameters for SQL (turn undefined into null)
-function sanitizeParams(params) {
-  if (!Array.isArray(params)) return [];
-  return params.map(p => (p === undefined ? null : p));
-}
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/mashalitic_db';
 
-// Initialize SQLite database
-function initSqlite() {
-  const { DatabaseSync } = require('node:sqlite');
-  const dataDir = path.join(__dirname, '../../data');
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
+let client = null;
+let dbInstance = null;
 
-  const dbPath = path.join(dataDir, 'mashalitic.db');
-  const isNew = !fs.existsSync(dbPath);
-  sqliteDb = new DatabaseSync(dbPath);
+// Initialize MongoDB Connection
+async function initialize() {
+  if (dbInstance) return dbInstance;
 
-  // Enable foreign keys and WAL mode for high performance
-  sqliteDb.exec('PRAGMA foreign_keys = ON;');
-  sqliteDb.exec('PRAGMA journal_mode = WAL;');
-
-  if (isNew) {
-    const schemaPath = path.join(__dirname, '../database/schema-sqlite.sql');
-    if (fs.existsSync(schemaPath)) {
-      const schemaSql = fs.readFileSync(schemaPath, 'utf8');
-      sqliteDb.exec(schemaSql);
-      console.log('✅ SQLite database initialized with schema');
-    }
-  }
-
-  console.log('🚀 Database Connected: SQLite (Local Embedded Engine) ->', dbPath);
-}
-
-// Initialize MySQL pool
-async function initMysql() {
-  const mysql = require('mysql2/promise');
   try {
-    pool = mysql.createPool({
-      host: process.env.DB_HOST || '127.0.0.1',
-      port: parseInt(process.env.DB_PORT || '3306', 10),
-      user: process.env.DB_USER || 'root',
-      password: process.env.DB_PASSWORD || '',
-      database: process.env.DB_NAME || 'mashalitic_db',
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0,
-      decimalNumbers: true
+    client = new MongoClient(MONGODB_URI, {
+      maxPoolSize: 20,
+      serverSelectionTimeoutMS: 5000,
     });
 
-    const [rows] = await pool.query('SELECT 1 as test');
-    console.log('🚀 Database Connected: MySQL 8.0+ -> mashalitic_db');
+    await client.connect();
+    dbInstance = client.db();
+    console.log(`🚀 Database Connected: MongoDB -> ${dbInstance.databaseName} (${MONGODB_URI})`);
+
+    // Ensure essential indexes
+    await ensureIndexes(dbInstance);
+
+    return dbInstance;
   } catch (err) {
-    console.warn('⚠️ MySQL connection failed (' + err.message + '). Falling back to SQLite engine.');
-    pool = null;
-    initSqlite();
+    console.error('❌ MongoDB Connection Error:', err.message);
+    throw err;
   }
 }
 
-// Initialize DB according to configuration
-async function initialize() {
-  if (DB_CLIENT === 'mysql') {
-    await initMysql();
-  } else {
-    initSqlite();
+// Ensure indexes across collections
+async function ensureIndexes(db) {
+  try {
+    await db.collection('users').createIndex({ email: 1 }, { unique: true });
+    await db.collection('users').createIndex({ id: 1 }, { unique: true });
+    await db.collection('products').createIndex({ id: 1 }, { unique: true });
+    await db.collection('products').createIndex({ sku: 1 });
+    await db.collection('products').createIndex({ barcode: 1 });
+    await db.collection('products').createIndex({ category_id: 1 });
+    await db.collection('products').createIndex({ brand_id: 1 });
+    await db.collection('categories').createIndex({ id: 1 }, { unique: true });
+    await db.collection('categories').createIndex({ slug: 1 }, { unique: true });
+    await db.collection('brands').createIndex({ id: 1 }, { unique: true });
+    await db.collection('customers').createIndex({ id: 1 }, { unique: true });
+    await db.collection('customers').createIndex({ phone: 1 });
+    await db.collection('suppliers').createIndex({ id: 1 }, { unique: true });
+    await db.collection('vehicles').createIndex({ id: 1 }, { unique: true });
+    await db.collection('product_vehicle_compatibility').createIndex({ product_id: 1, vehicle_id: 1 }, { unique: true });
+    await db.collection('sales').createIndex({ id: 1 }, { unique: true });
+    await db.collection('sales').createIndex({ invoice_number: 1 }, { unique: true });
+    await db.collection('sales').createIndex({ sale_date: -1 });
+    await db.collection('sale_items').createIndex({ id: 1 }, { unique: true });
+    await db.collection('sale_items').createIndex({ sale_id: 1 });
+    await db.collection('sale_items').createIndex({ product_id: 1 });
+    await db.collection('payments').createIndex({ id: 1 }, { unique: true });
+    await db.collection('payments').createIndex({ sale_id: 1 });
+    await db.collection('purchases').createIndex({ id: 1 }, { unique: true });
+    await db.collection('purchases').createIndex({ po_number: 1 }, { unique: true });
+    await db.collection('purchase_items').createIndex({ id: 1 }, { unique: true });
+    await db.collection('purchase_items').createIndex({ purchase_id: 1 });
+    await db.collection('expenses').createIndex({ id: 1 }, { unique: true });
+    await db.collection('expenses').createIndex({ expense_date: -1 });
+    await db.collection('stock_movements').createIndex({ id: 1 }, { unique: true });
+    await db.collection('stock_movements').createIndex({ product_id: 1 });
+    await db.collection('returns').createIndex({ id: 1 }, { unique: true });
+    await db.collection('shop_settings').createIndex({ setting_key: 1 }, { unique: true });
+    await db.collection('audit_logs').createIndex({ id: 1 }, { unique: true });
+    await db.collection('notifications').createIndex({ id: 1 }, { unique: true });
+  } catch (idxErr) {
+    console.warn('⚠️ Index creation notice:', idxErr.message);
   }
 }
 
-// Unified Query Function
-async function query(sql, params = []) {
-  const cleanParams = sanitizeParams(params);
-
-  if (pool) {
-    // MySQL query execution
-    try {
-      const [results] = await pool.query(sql, cleanParams);
-      if (Array.isArray(results)) {
-        return { rows: results, count: results.length };
-      } else {
-        return {
-          insertId: results.insertId,
-          affectedRows: results.affectedRows,
-          rows: []
-        };
-      }
-    } catch (err) {
-      console.error('MySQL Query Error:', err.message, '\nSQL:', sql, '\nParams:', cleanParams);
-      throw err;
-    }
-  } else {
-    // SQLite execution
-    if (!sqliteDb) {
-      initSqlite();
-    }
-
-    try {
-      const trimmed = sql.trim();
-      const isSelect = /^SELECT|^PRAGMA|^SHOW|^EXPLAIN/i.test(trimmed);
-
-      const stmt = sqliteDb.prepare(sql);
-      if (isSelect) {
-        const rows = stmt.all(...cleanParams);
-        return { rows, count: rows.length };
-      } else {
-        const info = stmt.run(...cleanParams);
-        return {
-          insertId: Number(info.lastInsertRowid),
-          affectedRows: Number(info.changes),
-          rows: []
-        };
-      }
-    } catch (err) {
-      console.error('SQLite Query Error:', err.message, '\nSQL:', sql, '\nParams:', cleanParams);
-      throw err;
-    }
+// Return raw Db
+function getDb() {
+  if (!dbInstance) {
+    throw new Error('Database not initialized. Call initialize() first.');
   }
+  return dbInstance;
 }
 
-// Unified Transaction Runner
+// Return Collection
+function getCollection(name) {
+  return getDb().collection(name);
+}
+
+// Atomic auto-incrementing integer sequence ID for MongoDB collections
+async function getNextId(sequenceName) {
+  const counters = getDb().collection('counters');
+  const result = await counters.findOneAndUpdate(
+    { _id: sequenceName },
+    { $inc: { seq: 1 } },
+    { upsert: true, returnDocument: 'after' }
+  );
+  return result.seq;
+}
+
+// Transaction helper with replica set & standalone fallback
 async function transaction(callback) {
-  if (pool) {
-    const connection = await pool.getConnection();
-    await connection.beginTransaction();
+  if (!client) {
+    await initialize();
+  }
+  
+  let session = null;
+  try {
+    session = client.startSession();
+    let result;
     try {
-      const trxQuery = async (sql, params = []) => {
-        const [results] = await connection.query(sql, sanitizeParams(params));
-        if (Array.isArray(results)) {
-          return { rows: results, count: results.length };
-        } else {
-          return {
-            insertId: results.insertId,
-            affectedRows: results.affectedRows,
-            rows: []
-          };
-        }
-      };
-      const result = await callback(trxQuery);
-      await connection.commit();
+      await session.withTransaction(async () => {
+        result = await callback(session);
+      });
       return result;
-    } catch (err) {
-      await connection.rollback();
-      throw err;
-    } finally {
-      connection.release();
+    } catch (trxErr) {
+      // If standalone MongoDB (not replica set), transactions are not supported: execute directly
+      if (trxErr.message && trxErr.message.includes('replica set')) {
+        return await callback(null);
+      }
+      throw trxErr;
     }
-  } else {
-    if (!sqliteDb) initSqlite();
-    sqliteDb.exec('BEGIN TRANSACTION;');
-    try {
-      const trxQuery = async (sql, params = []) => {
-        return query(sql, params);
-      };
-      const result = await callback(trxQuery);
-      sqliteDb.exec('COMMIT;');
-      return result;
-    } catch (err) {
-      sqliteDb.exec('ROLLBACK;');
-      throw err;
+  } catch (err) {
+    if (err.message && err.message.includes('replica set')) {
+      return await callback(null);
     }
+    throw err;
+  } finally {
+    if (session) {
+      await session.endSession().catch(() => {});
+    }
+  }
+}
+
+// Close client
+async function close() {
+  if (client) {
+    await client.close();
+    client = null;
+    dbInstance = null;
   }
 }
 
 module.exports = {
   initialize,
-  query,
+  getDb,
+  getCollection,
+  getNextId,
   transaction,
-  getPool: () => pool,
-  getSqliteDb: () => sqliteDb
+  close,
+  getClient: () => client
 };

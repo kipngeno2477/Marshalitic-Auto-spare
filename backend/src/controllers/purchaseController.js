@@ -5,37 +5,55 @@ const { logActivity } = require('../middleware/auditLogger');
 exports.getPurchases = async (req, res) => {
   try {
     const { supplier_id, status, payment_status } = req.query;
-    let sql = `
-      SELECT 
-        p.*,
-        s.name AS supplier_name,
-        s.phone AS supplier_phone,
-        u.name AS created_by_name,
-        (SELECT COUNT(*) FROM purchase_items WHERE purchase_id = p.id) AS item_count
-      FROM purchases p
-      JOIN suppliers s ON p.supplier_id = s.id
-      JOIN users u ON p.created_by = u.id
-      WHERE 1=1
-    `;
-    const params = [];
+    const filter = {};
 
     if (supplier_id) {
-      sql += ` AND p.supplier_id = ?`;
-      params.push(supplier_id);
+      filter.supplier_id = Number(supplier_id);
     }
     if (status) {
-      sql += ` AND p.status = ?`;
-      params.push(status);
+      filter.status = status;
     }
     if (payment_status) {
-      sql += ` AND p.payment_status = ?`;
-      params.push(payment_status);
+      filter.payment_status = payment_status;
     }
 
-    sql += ` ORDER BY p.order_date DESC, p.id DESC`;
+    const purchasesCol = db.getCollection('purchases');
+    const suppliersCol = db.getCollection('suppliers');
+    const usersCol = db.getCollection('users');
+    const itemsCol = db.getCollection('purchase_items');
 
-    const result = await db.query(sql, params);
-    res.json({ success: true, count: result.rows.length, data: result.rows });
+    const purchases = await purchasesCol
+      .find(filter, { projection: { _id: 0 } })
+      .sort({ order_date: -1, id: -1 })
+      .toArray();
+
+    const supplierIds = [...new Set(purchases.map(p => p.supplier_id).filter(Boolean))];
+    const userIds = [...new Set(purchases.map(p => p.created_by).filter(Boolean))];
+
+    const [suppliers, users, itemCounts] = await Promise.all([
+      suppliersCol.find({ id: { $in: supplierIds } }, { projection: { id: 1, name: 1, phone: 1, _id: 0 } }).toArray(),
+      usersCol.find({ id: { $in: userIds } }, { projection: { id: 1, name: 1, _id: 0 } }).toArray(),
+      itemsCol.aggregate([
+        { $group: { _id: '$purchase_id', count: { $sum: 1 } } }
+      ]).toArray()
+    ]);
+
+    const supMap = new Map(suppliers.map(s => [s.id, s]));
+    const userMap = new Map(users.map(u => [u.id, u.name]));
+    const countMap = new Map(itemCounts.map(i => [i._id, i.count]));
+
+    const enriched = purchases.map(p => {
+      const s = supMap.get(p.supplier_id) || {};
+      return {
+        ...p,
+        supplier_name: s.name || '',
+        supplier_phone: s.phone || '',
+        created_by_name: userMap.get(p.created_by) || 'Staff',
+        item_count: countMap.get(p.id) || 0
+      };
+    });
+
+    res.json({ success: true, count: enriched.length, data: enriched });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to retrieve purchase orders' });
   }
@@ -45,35 +63,55 @@ exports.getPurchases = async (req, res) => {
 exports.getPurchaseById = async (req, res) => {
   try {
     const { id } = req.params;
-    const poRes = await db.query(`
-      SELECT 
-        p.*,
-        s.name AS supplier_name,
-        s.company_name AS supplier_company,
-        s.phone AS supplier_phone,
-        s.email AS supplier_email,
-        s.address AS supplier_address,
-        u.name AS created_by_name
-      FROM purchases p
-      JOIN suppliers s ON p.supplier_id = s.id
-      JOIN users u ON p.created_by = u.id
-      WHERE p.id = ? OR p.po_number = ?
-    `, [id, id]);
+    const purchasesCol = db.getCollection('purchases');
+    const suppliersCol = db.getCollection('suppliers');
+    const usersCol = db.getCollection('users');
+    const itemsCol = db.getCollection('purchase_items');
+    const productsCol = db.getCollection('products');
 
-    if (poRes.rows.length === 0) {
+    const numId = !isNaN(id) ? Number(id) : null;
+    const po = await purchasesCol.findOne(
+      { $or: [{ id: numId }, { po_number: id }] },
+      { projection: { _id: 0 } }
+    );
+
+    if (!po) {
       return res.status(404).json({ success: false, message: 'Purchase order not found' });
     }
 
-    const po = poRes.rows[0];
+    const [supplier, user, items] = await Promise.all([
+      suppliersCol.findOne({ id: po.supplier_id }, { projection: { _id: 0 } }),
+      usersCol.findOne({ id: po.created_by }, { projection: { name: 1, _id: 0 } }),
+      itemsCol.find({ purchase_id: po.id }, { projection: { _id: 0 } }).toArray()
+    ]);
 
-    const itemsRes = await db.query(`
-      SELECT pi.*, p.name AS product_name, p.sku, p.quantity AS current_stock
-      FROM purchase_items pi
-      JOIN products p ON pi.product_id = p.id
-      WHERE pi.purchase_id = ?
-    `, [po.id]);
+    const productIds = items.map(it => it.product_id);
+    const products = await productsCol.find({ id: { $in: productIds } }, { projection: { id: 1, name: 1, sku: 1, quantity: 1, _id: 0 } }).toArray();
+    const prodMap = new Map(products.map(p => [p.id, p]));
 
-    res.json({ success: true, data: { ...po, items: itemsRes.rows } });
+    const enrichedItems = items.map(it => {
+      const p = prodMap.get(it.product_id) || {};
+      return {
+        ...it,
+        product_name: p.name || '',
+        sku: p.sku || '',
+        current_stock: p.quantity != null ? p.quantity : 0
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        ...po,
+        supplier_name: supplier ? supplier.name : '',
+        supplier_company: supplier ? supplier.company_name : '',
+        supplier_phone: supplier ? supplier.phone : '',
+        supplier_email: supplier ? supplier.email : '',
+        supplier_address: supplier ? supplier.address : '',
+        created_by_name: user ? user.name : 'Staff',
+        items: enrichedItems
+      }
+    });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Error retrieving purchase order' });
   }
@@ -83,53 +121,67 @@ exports.getPurchaseById = async (req, res) => {
 exports.createPurchase = async (req, res) => {
   try {
     const { supplier_id, order_date, expected_date, items, notes } = req.body;
-    // items: array of { product_id, ordered_qty, unit_cost }
-
     if (!supplier_id || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ success: false, message: 'Supplier and items required' });
     }
 
     const userId = req.user ? req.user.id : 1;
+    let totalCost = 0;
+    for (const it of items) {
+      totalCost += (parseFloat(it.unit_cost) * parseInt(it.ordered_qty, 10));
+    }
 
-    const poResult = await db.transaction(async (trx) => {
-      let totalCost = 0;
-      for (const it of items) {
-        totalCost += (it.unit_cost * it.ordered_qty);
+    const timestamp = Date.now().toString().slice(-6);
+    const poNumber = `PO-2026-${timestamp}`;
+    const poId = await db.getNextId('purchases');
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+
+    const newPo = {
+      id: poId,
+      po_number: poNumber,
+      supplier_id: Number(supplier_id),
+      order_date: order_date || now.substring(0, 10),
+      expected_date: expected_date || null,
+      received_date: null,
+      status: 'ordered',
+      subtotal: totalCost,
+      tax_amount: 0,
+      total_cost: totalCost,
+      paid_amount: 0,
+      payment_status: 'unpaid',
+      notes: notes || null,
+      created_by: userId,
+      created_at: now,
+      updated_at: now
+    };
+
+    await db.getCollection('purchases').insertOne(newPo);
+
+    const itemsCol = db.getCollection('purchase_items');
+    for (const it of items) {
+      const itId = await db.getNextId('purchase_items');
+      await itemsCol.insertOne({
+        id: itId,
+        purchase_id: poId,
+        product_id: Number(it.product_id),
+        ordered_qty: parseInt(it.ordered_qty, 10),
+        received_qty: 0,
+        unit_cost: parseFloat(it.unit_cost),
+        total_cost: parseFloat(it.unit_cost) * parseInt(it.ordered_qty, 10)
+      });
+    }
+
+    // Update supplier balance
+    await db.getCollection('suppliers').updateOne(
+      { id: Number(supplier_id) },
+      {
+        $inc: { outstanding_balance: totalCost },
+        $set: { updated_at: now }
       }
+    );
 
-      const timestamp = Date.now().toString().slice(-6);
-      const poNumber = `PO-2026-${timestamp}`;
-
-      const insRes = await trx(`
-        INSERT INTO purchases (
-          po_number, supplier_id, order_date, expected_date, status,
-          subtotal, tax_amount, total_cost, paid_amount, payment_status, notes, created_by
-        ) VALUES (?, ?, ?, ?, 'ordered', ?, 0, ?, 0, 'unpaid', ?, ?)
-      `, [
-        poNumber, supplier_id, order_date || new Date().toISOString().substring(0, 10),
-        expected_date || null, totalCost, totalCost, notes || null, userId
-      ]);
-
-      const poId = insRes.insertId;
-
-      for (const it of items) {
-        await trx(`
-          INSERT INTO purchase_items (purchase_id, product_id, ordered_qty, received_qty, unit_cost, total_cost)
-          VALUES (?, ?, ?, 0, ?, ?)
-        `, [poId, it.product_id, it.ordered_qty, it.unit_cost, it.unit_cost * it.ordered_qty]);
-      }
-
-      // Update supplier balance
-      await trx(`
-        UPDATE suppliers 
-        SET outstanding_balance = outstanding_balance + ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `, [totalCost, supplier_id]);
-
-      return { poId, poNumber, totalCost };
-    });
-
-    await logActivity(userId, 'PURCHASE_CREATE', 'Purchases', `Created PO ${poResult.poNumber} (KSh ${poResult.totalCost})`);
+    const poResult = { poId, poNumber, totalCost };
+    await logActivity(userId, 'PURCHASE_CREATE', 'Purchases', `Created PO ${poNumber} (KSh ${totalCost})`);
 
     res.status(201).json({ success: true, message: 'Purchase order created successfully', data: poResult });
   } catch (err) {
@@ -138,71 +190,75 @@ exports.createPurchase = async (req, res) => {
   }
 };
 
-// 4. Receive Purchased Goods (Stock Inflow)
+// 4. Receive Purchased Goods
 exports.receivePurchase = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { items } = req.body; // array of { item_id, product_id, received_qty }
-
+    const id = Number(req.params.id);
+    const { items } = req.body;
     const userId = req.user ? req.user.id : 1;
 
-    await db.transaction(async (trx) => {
-      const poRes = await trx('SELECT * FROM purchases WHERE id = ?', [id]);
-      if (poRes.rows.length === 0) throw new Error('Purchase order not found');
-      const po = poRes.rows[0];
+    const purchasesCol = db.getCollection('purchases');
+    const itemsCol = db.getCollection('purchase_items');
+    const productsCol = db.getCollection('products');
+    const movementsCol = db.getCollection('stock_movements');
 
-      let allReceived = true;
+    const po = await purchasesCol.findOne({ id });
+    if (!po) return res.status(404).json({ success: false, message: 'Purchase order not found' });
 
-      for (const item of items) {
-        const qtyToReceive = parseInt(item.received_qty, 10);
-        if (qtyToReceive > 0) {
-          // Update purchase item received qty
-          await trx(`
-            UPDATE purchase_items 
-            SET received_qty = received_qty + ? 
-            WHERE id = ? AND purchase_id = ?
-          `, [qtyToReceive, item.item_id, id]);
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
 
-          // Fetch product
-          const prodRes = await trx('SELECT quantity, purchase_price, name FROM products WHERE id = ?', [item.product_id]);
-          if (prodRes.rows.length > 0) {
-            const currentStock = prodRes.rows[0].quantity;
-            const newStock = currentStock + qtyToReceive;
+    for (const item of items) {
+      const qtyToReceive = parseInt(item.received_qty, 10);
+      if (qtyToReceive > 0) {
+        await itemsCol.updateOne(
+          { id: Number(item.item_id), purchase_id: id },
+          { $inc: { received_qty: qtyToReceive } }
+        );
 
-            // Increment inventory stock
-            await trx(`UPDATE products SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [newStock, item.product_id]);
+        const prod = await productsCol.findOne({ id: Number(item.product_id) });
+        if (prod) {
+          const currentStock = prod.quantity;
+          const newStock = currentStock + qtyToReceive;
 
-            // Record stock movement
-            await trx(`
-              INSERT INTO stock_movements (
-                product_id, movement_type, quantity, previous_quantity, new_quantity, unit_cost,
-                reference_type, reference_id, reason, user_id
-              ) VALUES (?, 'purchase', ?, ?, ?, ?, 'purchase', ?, 'Supplier PO delivery received', ?)
-            `, [
-              item.product_id, qtyToReceive, currentStock, newStock, prodRes.rows[0].purchase_price, po.po_number, userId
-            ]);
-          }
+          await productsCol.updateOne(
+            { id: prod.id },
+            { $set: { quantity: newStock, updated_at: now } }
+          );
+
+          const movId = await db.getNextId('stock_movements');
+          await movementsCol.insertOne({
+            id: movId,
+            product_id: prod.id,
+            movement_type: 'purchase',
+            quantity: qtyToReceive,
+            previous_quantity: currentStock,
+            new_quantity: newStock,
+            unit_cost: prod.purchase_price,
+            reference_type: 'purchase',
+            reference_id: po.po_number,
+            reason: 'Supplier PO delivery received',
+            user_id: userId,
+            created_at: now
+          });
         }
       }
+    }
 
-      // Check overall PO status
-      const checkItems = await trx('SELECT ordered_qty, received_qty FROM purchase_items WHERE purchase_id = ?', [id]);
-      let totalOrdered = 0;
-      let totalReceived = 0;
-      for (const ci of checkItems.rows) {
-        totalOrdered += ci.ordered_qty;
-        totalReceived += ci.received_qty;
-      }
+    const allItems = await itemsCol.find({ purchase_id: id }).toArray();
+    let totalOrdered = 0;
+    let totalReceived = 0;
+    for (const ci of allItems) {
+      totalOrdered += ci.ordered_qty;
+      totalReceived += ci.received_qty;
+    }
 
-      const finalStatus = totalReceived >= totalOrdered ? 'received' : (totalReceived > 0 ? 'partial' : 'ordered');
-      const receivedDate = new Date().toISOString().substring(0, 10);
+    const finalStatus = totalReceived >= totalOrdered ? 'received' : (totalReceived > 0 ? 'partial' : 'ordered');
+    const receivedDate = now.substring(0, 10);
 
-      await trx(`
-        UPDATE purchases 
-        SET status = ?, received_date = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?
-      `, [finalStatus, receivedDate, id]);
-    });
+    await purchasesCol.updateOne(
+      { id },
+      { $set: { status: finalStatus, received_date: receivedDate, updated_at: now } }
+    );
 
     await logActivity(userId, 'PURCHASE_RECEIVE', 'Purchases', `Received items for PO ID ${id}`);
     res.json({ success: true, message: 'Stock successfully received and inventory updated' });

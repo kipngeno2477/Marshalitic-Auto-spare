@@ -25,5 +25,7 @@ echo Both services have been started!
 echo Frontend UI: http://localhost:3000
 echo Backend API: http://localhost:5000
 echo Default Login: admin@mashalitic.co.ke / admin123
+echo Opening web browser...
+start http://localhost:3000
 echo =========================================================================
 timeout /t 5

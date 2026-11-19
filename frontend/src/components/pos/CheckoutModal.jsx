@@ -36,7 +36,7 @@ export default function CheckoutModal({ isOpen, onClose, onSaleSuccess }) {
     { id: 1, name: 'James Mwangi (+254 712 345 678)' },
     { id: 2, name: 'Grace Wanjiku (+254 722 890 123)' },
     { id: 3, name: 'Peter Otieno (+254 733 456 789)' },
-    { id: 4, name: 'Kelvin Kiprop (+254 701 998 877)' }
+    { id: 4, name: 'Kelvin Kiprop (+254 799 902 607)' }
   ]);
 
   const [isProcessing, setIsProcessing] = useState(false);
@@ -209,11 +209,10 @@ export default function CheckoutModal({ isOpen, onClose, onSaleSuccess }) {
               <button
                 type="button"
                 onClick={() => setPaymentMethod('mpesa')}
-                className={`flex flex-col items-center justify-center p-3 rounded-2xl border text-xs font-bold transition-all ${
-                  paymentMethod === 'mpesa'
-                    ? 'border-emerald-500 bg-emerald-50 text-emerald-800 ring-2 ring-emerald-500/20'
-                    : 'border-slate-200 hover:bg-slate-50 text-slate-600'
-                }`}
+                className={`flex flex-col items-center justify-center p-3 rounded-2xl border text-xs font-bold transition-all ${paymentMethod === 'mpesa'
+                  ? 'border-emerald-500 bg-emerald-50 text-emerald-800 ring-2 ring-emerald-500/20'
+                  : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                  }`}
               >
                 <Smartphone className="w-5 h-5 text-emerald-600 mb-1" />
                 <span>M-Pesa</span>
@@ -222,11 +221,10 @@ export default function CheckoutModal({ isOpen, onClose, onSaleSuccess }) {
               <button
                 type="button"
                 onClick={() => setPaymentMethod('cash')}
-                className={`flex flex-col items-center justify-center p-3 rounded-2xl border text-xs font-bold transition-all ${
-                  paymentMethod === 'cash'
-                    ? 'border-blue-500 bg-blue-50 text-blue-800 ring-2 ring-blue-500/20'
-                    : 'border-slate-200 hover:bg-slate-50 text-slate-600'
-                }`}
+                className={`flex flex-col items-center justify-center p-3 rounded-2xl border text-xs font-bold transition-all ${paymentMethod === 'cash'
+                  ? 'border-blue-500 bg-blue-50 text-blue-800 ring-2 ring-blue-500/20'
+                  : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                  }`}
               >
                 <Banknote className="w-5 h-5 text-blue-600 mb-1" />
                 <span>Cash</span>
@@ -235,11 +233,10 @@ export default function CheckoutModal({ isOpen, onClose, onSaleSuccess }) {
               <button
                 type="button"
                 onClick={() => setPaymentMethod('card')}
-                className={`flex flex-col items-center justify-center p-3 rounded-2xl border text-xs font-bold transition-all ${
-                  paymentMethod === 'card'
-                    ? 'border-purple-500 bg-purple-50 text-purple-800 ring-2 ring-purple-500/20'
-                    : 'border-slate-200 hover:bg-slate-50 text-slate-600'
-                }`}
+                className={`flex flex-col items-center justify-center p-3 rounded-2xl border text-xs font-bold transition-all ${paymentMethod === 'card'
+                  ? 'border-purple-500 bg-purple-50 text-purple-800 ring-2 ring-purple-500/20'
+                  : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                  }`}
               >
                 <CreditCard className="w-5 h-5 text-purple-600 mb-1" />
                 <span>Card</span>
@@ -248,11 +245,10 @@ export default function CheckoutModal({ isOpen, onClose, onSaleSuccess }) {
               <button
                 type="button"
                 onClick={() => setPaymentMethod('bank')}
-                className={`flex flex-col items-center justify-center p-3 rounded-2xl border text-xs font-bold transition-all ${
-                  paymentMethod === 'bank'
-                    ? 'border-amber-500 bg-amber-50 text-amber-800 ring-2 ring-amber-500/20'
-                    : 'border-slate-200 hover:bg-slate-50 text-slate-600'
-                }`}
+                className={`flex flex-col items-center justify-center p-3 rounded-2xl border text-xs font-bold transition-all ${paymentMethod === 'bank'
+                  ? 'border-amber-500 bg-amber-50 text-amber-800 ring-2 ring-amber-500/20'
+                  : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                  }`}
               >
                 <Building className="w-5 h-5 text-amber-600 mb-1" />
                 <span>Bank</span>

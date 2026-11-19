@@ -39,12 +39,12 @@ exports.initiateStkPush = async (req, res) => {
     const numericAmount = Math.round(Number(amount));
 
     // Check configuration
-    const settingsRes = await db.query(`
-      SELECT setting_key, setting_value FROM shop_settings 
-      WHERE setting_key IN ('mpesa_consumer_key', 'mpesa_consumer_secret', 'mpesa_passkey', 'mpesa_paybill', 'mpesa_env')
-    `);
+    const settingsCol = db.getCollection('shop_settings');
+    const settingsList = await settingsCol.find({
+      setting_key: { $in: ['mpesa_consumer_key', 'mpesa_consumer_secret', 'mpesa_passkey', 'mpesa_paybill', 'mpesa_env'] }
+    }).toArray();
     const settings = {};
-    settingsRes.rows.forEach(r => settings[r.setting_key] = r.setting_value);
+    settingsList.forEach(r => settings[r.setting_key] = r.setting_value);
 
     const env = settings.mpesa_env || process.env.MPESA_ENV || 'sandbox';
     const consumerKey = settings.mpesa_consumer_key || process.env.MPESA_CONSUMER_KEY;

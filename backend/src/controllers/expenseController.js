@@ -5,52 +5,72 @@ const { logActivity } = require('../middleware/auditLogger');
 exports.getExpenses = async (req, res) => {
   try {
     const { category, startDate, endDate, search } = req.query;
-    let sql = `
-      SELECT 
-        e.*,
-        u.name AS approved_by_name
-      FROM expenses e
-      JOIN users u ON e.approved_by = u.id
-      WHERE 1=1
-    `;
-    const params = [];
+    const filter = {};
 
     if (category) {
-      sql += ` AND e.category = ?`;
-      params.push(category);
+      filter.category = category;
     }
-    if (startDate) {
-      sql += ` AND e.expense_date >= ?`;
-      params.push(startDate);
+    if (startDate || endDate) {
+      filter.expense_date = {};
+      if (startDate) filter.expense_date.$gte = startDate;
+      if (endDate) filter.expense_date.$lte = endDate;
     }
-    if (endDate) {
-      sql += ` AND e.expense_date <= ?`;
-      params.push(endDate);
-    }
-    if (search) {
-      sql += ` AND (e.title LIKE ? OR e.expense_number LIKE ?)`;
-      const term = `%${search.trim()}%`;
-      params.push(term, term);
+    if (search && search.trim()) {
+      const term = search.trim();
+      const regex = new RegExp(term, 'i');
+      filter.$or = [
+        { title: regex },
+        { expense_number: regex }
+      ];
     }
 
-    sql += ` ORDER BY e.expense_date DESC, e.id DESC`;
+    const expensesCol = db.getCollection('expenses');
+    const usersCol = db.getCollection('users');
 
-    const result = await db.query(sql, params);
+    const expenses = await expensesCol
+      .find(filter, { projection: { _id: 0 } })
+      .sort({ expense_date: -1, id: -1 })
+      .toArray();
 
-    // Calculate totals by category
-    const catTotalRes = await db.query(`
-      SELECT category, SUM(amount) AS total_amount, COUNT(id) AS count
-      FROM expenses
-      GROUP BY category
-    `);
+    // Map approved_by_name
+    const userIds = [...new Set(expenses.map(e => e.approved_by).filter(Boolean))];
+    const users = await usersCol
+      .find({ id: { $in: userIds } }, { projection: { id: 1, name: 1, _id: 0 } })
+      .toArray();
+    const userMap = new Map(users.map(u => [u.id, u.name]));
+
+    const enrichedExpenses = expenses.map(e => ({
+      ...e,
+      approved_by_name: userMap.get(e.approved_by) || 'Admin'
+    }));
+
+    // Category summary aggregation
+    const categorySummary = await expensesCol.aggregate([
+      {
+        $group: {
+          _id: '$category',
+          total_amount: { $sum: '$amount' },
+          count: { $sum: 1 }
+        }
+      },
+      {
+        $project: {
+          _id: 0,
+          category: '$_id',
+          total_amount: 1,
+          count: 1
+        }
+      }
+    ]).toArray();
 
     res.json({
       success: true,
-      count: result.rows.length,
-      data: result.rows,
-      categorySummary: catTotalRes.rows
+      count: enrichedExpenses.length,
+      data: enrichedExpenses,
+      categorySummary
     });
   } catch (err) {
+    console.error('Error fetching expenses:', err);
     res.status(500).json({ success: false, message: 'Failed to retrieve expenses' });
   }
 };
@@ -65,18 +85,27 @@ exports.createExpense = async (req, res) => {
 
     const userId = req.user ? req.user.id : 1;
     const expenseNum = `EXP-2026-${Date.now().toString().slice(-6)}`;
+    const id = await db.getNextId('expenses');
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
 
-    const result = await db.query(`
-      INSERT INTO expenses (expense_number, category, title, amount, expense_date, payment_method, notes, approved_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      expenseNum, category, title, parseFloat(amount),
-      expense_date || new Date().toISOString().substring(0, 10),
-      payment_method || 'cash', notes || null, userId
-    ]);
+    const newExpense = {
+      id,
+      expense_number: expenseNum,
+      category,
+      title,
+      amount: parseFloat(amount),
+      expense_date: expense_date || now.substring(0, 10),
+      payment_method: payment_method || 'cash',
+      receipt_url: null,
+      notes: notes || null,
+      approved_by: userId,
+      created_at: now
+    };
 
+    await db.getCollection('expenses').insertOne(newExpense);
     await logActivity(userId, 'EXPENSE_CREATE', 'Expenses', `Recorded expense ${expenseNum} (${category}: KSh ${amount})`);
-    res.status(201).json({ success: true, expenseId: result.insertId, expenseNumber: expenseNum });
+
+    res.status(201).json({ success: true, expenseId: id, expenseNumber: expenseNum });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Failed to record expense' });
   }
@@ -85,8 +114,8 @@ exports.createExpense = async (req, res) => {
 // 3. Delete Expense
 exports.deleteExpense = async (req, res) => {
   try {
-    const { id } = req.params;
-    await db.query('DELETE FROM expenses WHERE id = ?', [id]);
+    const id = Number(req.params.id);
+    await db.getCollection('expenses').deleteOne({ id });
     await logActivity(req.user ? req.user.id : 1, 'EXPENSE_DELETE', 'Expenses', `Deleted expense ID ${id}`);
     res.json({ success: true, message: 'Expense deleted' });
   } catch (err) {

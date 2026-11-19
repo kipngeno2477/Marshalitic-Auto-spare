@@ -54,7 +54,7 @@ export default function DashboardView({ onOpenCheckout, onOpenBarcodeScanner }) 
   // Dynamic Dashboard Stats
   const [stats, setStats] = useState({
     kpis: {
-      todaySales: 12500,
+      todaySales: 50000,
       todaySalesTrend: '+12%',
       todayProfit: 4850,
       todayProfitTrend: '+15%',
@@ -555,13 +555,12 @@ export default function DashboardView({ onOpenCheckout, onOpenBarcodeScanner }) 
                       KSh {Number(s.total_amount).toLocaleString()}
                     </span>
                     <span
-                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full inline-block mt-0.5 uppercase ${
-                        s.payment_method === 'mpesa'
-                          ? 'bg-emerald-100 text-emerald-700'
-                          : s.payment_method === 'cash'
+                      className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full inline-block mt-0.5 uppercase ${s.payment_method === 'mpesa'
+                        ? 'bg-emerald-100 text-emerald-700'
+                        : s.payment_method === 'cash'
                           ? 'bg-blue-100 text-blue-700'
                           : 'bg-purple-100 text-purple-700'
-                      }`}
+                        }`}
                     >
                       {s.payment_method}
                     </span>

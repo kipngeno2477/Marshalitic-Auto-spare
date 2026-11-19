@@ -21,7 +21,7 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Static uploads / receipts if needed
+// Static uploads
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Mount API routes
@@ -32,6 +32,7 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'ONLINE',
     system: 'MASHALITIC AUTO SPARES ERP',
+    database: 'MongoDB',
     tagline: 'Drive with Confidence.',
     timestamp: new Date().toISOString()
   });
@@ -52,9 +53,9 @@ async function startServer() {
     await db.initialize();
     
     // Auto-seed sample database if fresh
-    const userCheck = await db.query('SELECT COUNT(*) as count FROM users');
-    if (userCheck.rows[0].count === 0) {
-      console.log('📦 Database is empty. Seeding initial data...');
+    const userCount = await db.getCollection('users').countDocuments({});
+    if (userCount === 0) {
+      console.log('📦 MongoDB database is empty. Seeding initial data...');
       await seed();
     }
 
@@ -62,6 +63,7 @@ async function startServer() {
       console.log(`=======================================================`);
       console.log(`  🚗 MASHALITIC AUTO SPARES - MANAGEMENT SYSTEM API   `);
       console.log(`  ⚡ Server running on http://localhost:${PORT}        `);
+      console.log(`  🍃 Database: MongoDB (Active & Connected)           `);
       console.log(`  🛡️  Auth: JWT & RBAC Active                          `);
       console.log(`  💳 M-Pesa Daraja: Ready (Sandbox/Live)              `);
       console.log(`=======================================================`);

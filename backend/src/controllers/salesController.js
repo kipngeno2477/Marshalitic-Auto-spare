@@ -5,49 +5,65 @@ const { logActivity } = require('../middleware/auditLogger');
 exports.getSales = async (req, res) => {
   try {
     const { startDate, endDate, customer_id, payment_method, status, search } = req.query;
-    let sql = `
-      SELECT 
-        s.*,
-        u.name AS cashier_name,
-        c.phone AS customer_phone,
-        (SELECT COUNT(*) FROM sale_items WHERE sale_id = s.id) AS item_count
-      FROM sales s
-      JOIN users u ON s.cashier_id = u.id
-      LEFT JOIN customers c ON s.customer_id = c.id
-      WHERE 1=1
-    `;
-    const params = [];
+    const filter = {};
 
-    if (startDate) {
-      sql += ` AND DATE(s.sale_date) >= DATE(?)`;
-      params.push(startDate);
-    }
-    if (endDate) {
-      sql += ` AND DATE(s.sale_date) <= DATE(?)`;
-      params.push(endDate);
+    if (startDate || endDate) {
+      filter.sale_date = {};
+      if (startDate) filter.sale_date.$gte = startDate;
+      if (endDate) filter.sale_date.$lte = endDate + ' 23:59:59';
     }
     if (customer_id) {
-      sql += ` AND s.customer_id = ?`;
-      params.push(customer_id);
+      filter.customer_id = Number(customer_id);
     }
     if (payment_method) {
-      sql += ` AND s.payment_method = ?`;
-      params.push(payment_method);
+      filter.payment_method = payment_method;
     }
     if (status) {
-      sql += ` AND s.status = ?`;
-      params.push(status);
+      filter.status = status;
     }
-    if (search) {
-      sql += ` AND (s.invoice_number LIKE ? OR s.customer_name LIKE ?)`;
-      const term = `%${search.trim()}%`;
-      params.push(term, term);
+    if (search && search.trim()) {
+      const term = search.trim();
+      const regex = new RegExp(term, 'i');
+      filter.$or = [
+        { invoice_number: regex },
+        { customer_name: regex }
+      ];
     }
 
-    sql += ` ORDER BY s.sale_date DESC`;
+    const salesCol = db.getCollection('sales');
+    const usersCol = db.getCollection('users');
+    const customersCol = db.getCollection('customers');
+    const saleItemsCol = db.getCollection('sale_items');
 
-    const result = await db.query(sql, params);
-    res.json({ success: true, count: result.rows.length, data: result.rows });
+    const sales = await salesCol
+      .find(filter, { projection: { _id: 0 } })
+      .sort({ sale_date: -1 })
+      .toArray();
+
+    // Map cashiers, customers, and item counts
+    const userIds = [...new Set(sales.map(s => s.cashier_id).filter(Boolean))];
+    const customerIds = [...new Set(sales.map(s => s.customer_id).filter(Boolean))];
+
+    const [users, customers, itemCounts] = await Promise.all([
+      usersCol.find({ id: { $in: userIds } }, { projection: { id: 1, name: 1, _id: 0 } }).toArray(),
+      customersCol.find({ id: { $in: customerIds } }, { projection: { id: 1, phone: 1, _id: 0 } }).toArray(),
+      saleItemsCol.aggregate([
+        { $group: { _id: '$sale_id', count: { $sum: 1 } } }
+      ]).toArray()
+    ]);
+
+    const userMap = new Map(users.map(u => [u.id, u.name]));
+    const custMap = new Map(customers.map(c => [c.id, c.phone]));
+    const countMap = new Map(itemCounts.map(i => [i._id, i.count]));
+
+    const enriched = sales.map(s => ({
+      ...s,
+      cashier_name: userMap.get(s.cashier_id) || 'Staff',
+      customer_phone: custMap.get(s.customer_id) || '',
+      item_count: countMap.get(s.id) || 0
+    }));
+
+    res.json({ success: true, count: enriched.length, data: enriched });
   } catch (err) {
     console.error('Error fetching sales:', err);
     res.status(500).json({ success: false, message: 'Failed to retrieve sales records' });
@@ -58,57 +74,77 @@ exports.getSales = async (req, res) => {
 exports.getSaleById = async (req, res) => {
   try {
     const { id } = req.params;
-    const saleRes = await db.query(`
-      SELECT 
-        s.*,
-        u.name AS cashier_name,
-        u.email AS cashier_email,
-        c.phone AS customer_phone,
-        c.email AS customer_email,
-        c.vehicle_reg_no AS customer_vehicle
-      FROM sales s
-      JOIN users u ON s.cashier_id = u.id
-      LEFT JOIN customers c ON s.customer_id = c.id
-      WHERE s.id = ? OR s.invoice_number = ?
-    `, [id, id]);
+    const salesCol = db.getCollection('sales');
+    const usersCol = db.getCollection('users');
+    const customersCol = db.getCollection('customers');
+    const saleItemsCol = db.getCollection('sale_items');
+    const productsCol = db.getCollection('products');
+    const paymentsCol = db.getCollection('payments');
+    const returnsCol = db.getCollection('returns');
 
-    if (saleRes.rows.length === 0) {
+    const numId = !isNaN(id) ? Number(id) : null;
+    const sale = await salesCol.findOne(
+      { $or: [{ id: numId }, { invoice_number: id }] },
+      { projection: { _id: 0 } }
+    );
+
+    if (!sale) {
       return res.status(404).json({ success: false, message: 'Sale invoice not found' });
     }
 
-    const sale = saleRes.rows[0];
+    const [cashier, customer, saleItems, payments, returns, allUsers] = await Promise.all([
+      usersCol.findOne({ id: sale.cashier_id }, { projection: { name: 1, email: 1, _id: 0 } }),
+      sale.customer_id ? customersCol.findOne({ id: sale.customer_id }, { projection: { phone: 1, email: 1, vehicle_reg_no: 1, _id: 0 } }) : null,
+      saleItemsCol.find({ sale_id: sale.id }, { projection: { _id: 0 } }).toArray(),
+      paymentsCol.find({ sale_id: sale.id }, { projection: { _id: 0 } }).toArray(),
+      returnsCol.find({ sale_id: sale.id }, { projection: { _id: 0 } }).toArray(),
+      usersCol.find({}, { projection: { id: 1, name: 1, _id: 0 } }).toArray()
+    ]);
 
-    const itemsRes = await db.query(`
-      SELECT si.*, p.barcode, p.image_url
-      FROM sale_items si
-      LEFT JOIN products p ON si.product_id = p.id
-      WHERE si.sale_id = ?
-    `, [sale.id]);
+    const userMap = new Map(allUsers.map(u => [u.id, u.name]));
 
-    const paymentsRes = await db.query(`
-      SELECT p.*, u.name AS receiver_name
-      FROM payments p
-      JOIN users u ON p.received_by = u.id
-      WHERE p.sale_id = ?
-    `, [sale.id]);
+    // Enrich items with product barcode & image_url
+    const productIds = saleItems.map(it => it.product_id);
+    const products = await productsCol.find({ id: { $in: productIds } }, { projection: { id: 1, barcode: 1, image_url: 1, _id: 0 } }).toArray();
+    const prodMap = new Map(products.map(p => [p.id, p]));
 
-    const returnsRes = await db.query(`
-      SELECT r.*, u.name AS approved_by_name
-      FROM returns r
-      JOIN users u ON r.approved_by = u.id
-      WHERE r.sale_id = ?
-    `, [sale.id]);
+    const enrichedItems = saleItems.map(si => {
+      const p = prodMap.get(si.product_id) || {};
+      return {
+        ...si,
+        barcode: p.barcode || '',
+        image_url: p.image_url || null
+      };
+    });
+
+    // Enrich payments
+    const enrichedPayments = payments.map(pm => ({
+      ...pm,
+      receiver_name: userMap.get(pm.received_by) || 'Staff'
+    }));
+
+    // Enrich returns
+    const enrichedReturns = returns.map(r => ({
+      ...r,
+      approved_by_name: userMap.get(r.approved_by) || 'Admin'
+    }));
 
     res.json({
       success: true,
       data: {
         ...sale,
-        items: itemsRes.rows,
-        payments: paymentsRes.rows,
-        returns: returnsRes.rows
+        cashier_name: cashier ? cashier.name : 'Staff',
+        cashier_email: cashier ? cashier.email : '',
+        customer_phone: customer ? customer.phone : '',
+        customer_email: customer ? customer.email : '',
+        customer_vehicle: customer ? customer.vehicle_reg_no : '',
+        items: enrichedItems,
+        payments: enrichedPayments,
+        returns: enrichedReturns
       }
     });
   } catch (err) {
+    console.error('Error retrieving sale details:', err);
     res.status(500).json({ success: false, message: 'Error retrieving sale details' });
   }
 };
@@ -117,81 +153,97 @@ exports.getSaleById = async (req, res) => {
 exports.processReturn = async (req, res) => {
   try {
     const { sale_id, items, reason, refund_method } = req.body;
-    // items: array of { product_id, quantity, condition: 'restockable'|'damaged', unit_price }
-
     if (!sale_id || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ success: false, message: 'Return items and sale_id required' });
     }
 
     const approvedBy = req.user ? req.user.id : 1;
+    const salesCol = db.getCollection('sales');
+    const returnsCol = db.getCollection('returns');
+    const returnItemsCol = db.getCollection('return_items');
+    const productsCol = db.getCollection('products');
+    const movementsCol = db.getCollection('stock_movements');
 
-    const returnResult = await db.transaction(async (trx) => {
-      const saleRes = await trx('SELECT * FROM sales WHERE id = ?', [sale_id]);
-      if (saleRes.rows.length === 0) {
-        throw new Error('Sale not found');
-      }
-      const sale = saleRes.rows[0];
+    const sale = await salesCol.findOne({ id: Number(sale_id) });
+    if (!sale) {
+      return res.status(404).json({ success: false, message: 'Sale not found' });
+    }
 
-      let totalRefund = 0;
-      for (const item of items) {
-        totalRefund += (item.unit_price * item.quantity);
-      }
+    let totalRefund = 0;
+    for (const item of items) {
+      totalRefund += (parseFloat(item.unit_price) * parseInt(item.quantity, 10));
+    }
 
-      const returnNumber = `RET-${Date.now().toString().slice(-6)}`;
+    const returnNumber = `RET-${Date.now().toString().slice(-6)}`;
+    const returnId = await db.getNextId('returns');
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
 
-      const retInsert = await trx(`
-        INSERT INTO returns (
-          return_number, sale_id, customer_id, return_date, total_refund_amount,
-          refund_method, reason, status, approved_by
-        ) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, 'approved', ?)
-      `, [
-        returnNumber,
-        sale.id,
-        sale.customer_id,
-        totalRefund,
-        refund_method || 'cash',
-        reason || 'Customer returned part',
-        approvedBy
-      ]);
-
-      const returnId = retInsert.insertId;
-
-      for (const item of items) {
-        const restock = item.condition === 'restockable' ? 1 : 0;
-        await trx(`
-          INSERT INTO return_items (return_id, product_id, quantity, unit_price, condition, restocked)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `, [returnId, item.product_id, item.quantity, item.unit_price, item.condition || 'restockable', restock]);
-
-        if (restock) {
-          // Increase stock back
-          const prodRes = await trx('SELECT quantity, purchase_price FROM products WHERE id = ?', [item.product_id]);
-          if (prodRes.rows.length > 0) {
-            const currentQty = prodRes.rows[0].quantity;
-            const newQty = currentQty + item.quantity;
-            await trx('UPDATE products SET quantity = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [newQty, item.product_id]);
-
-            await trx(`
-              INSERT INTO stock_movements (
-                product_id, movement_type, quantity, previous_quantity, new_quantity, unit_cost,
-                reference_type, reference_id, reason, user_id
-              ) VALUES (?, 'return_in', ?, ?, ?, ?, 'return', ?, 'Customer return restocked', ?)
-            `, [
-              item.product_id, item.quantity, currentQty, newQty, prodRes.rows[0].purchase_price, returnNumber, approvedBy
-            ]);
-          }
-        }
-      }
-
-      // Mark sale status if fully returned
-      await trx(`UPDATE sales SET status = 'returned' WHERE id = ?`, [sale.id]);
-
-      return { returnNumber, totalRefund };
+    await returnsCol.insertOne({
+      id: returnId,
+      return_number: returnNumber,
+      sale_id: sale.id,
+      customer_id: sale.customer_id,
+      return_date: now,
+      total_refund_amount: totalRefund,
+      refund_method: refund_method || 'cash',
+      reason: reason || 'Customer returned part',
+      status: 'approved',
+      approved_by: approvedBy,
+      created_at: now
     });
 
-    await logActivity(approvedBy, 'SALE_RETURN', 'Sales', `Processed return ${returnResult.returnNumber} for KSh ${returnResult.totalRefund}`);
+    for (const item of items) {
+      const restock = item.condition === 'restockable' ? 1 : 0;
+      const retItemId = await db.getNextId('return_items');
 
-    res.json({ success: true, message: 'Return processed and stock updated', data: returnResult });
+      await returnItemsCol.insertOne({
+        id: retItemId,
+        return_id: returnId,
+        product_id: Number(item.product_id),
+        quantity: parseInt(item.quantity, 10),
+        unit_price: parseFloat(item.unit_price),
+        condition: item.condition || 'restockable',
+        restocked: restock
+      });
+
+      if (restock) {
+        const prod = await productsCol.findOne({ id: Number(item.product_id) });
+        if (prod) {
+          const currentQty = prod.quantity;
+          const newQty = currentQty + parseInt(item.quantity, 10);
+          await productsCol.updateOne(
+            { id: prod.id },
+            { $set: { quantity: newQty, updated_at: now } }
+          );
+
+          const movId = await db.getNextId('stock_movements');
+          await movementsCol.insertOne({
+            id: movId,
+            product_id: prod.id,
+            movement_type: 'return_in',
+            quantity: parseInt(item.quantity, 10),
+            previous_quantity: currentQty,
+            new_quantity: newQty,
+            unit_cost: prod.purchase_price,
+            reference_type: 'return',
+            reference_id: returnNumber,
+            reason: 'Customer return restocked',
+            user_id: approvedBy,
+            created_at: now
+          });
+        }
+      }
+    }
+
+    await salesCol.updateOne({ id: sale.id }, { $set: { status: 'returned', updated_at: now } });
+
+    await logActivity(approvedBy, 'SALE_RETURN', 'Sales', `Processed return ${returnNumber} for KSh ${totalRefund}`);
+
+    res.json({
+      success: true,
+      message: 'Return processed and stock updated',
+      data: { returnNumber, totalRefund }
+    });
   } catch (err) {
     console.error('Error processing return:', err);
     res.status(500).json({ success: false, message: err.message || 'Failed to process return' });

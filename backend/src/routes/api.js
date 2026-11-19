@@ -17,6 +17,11 @@ const reportController = require('../controllers/reportController');
 const mpesaController = require('../controllers/mpesaController');
 const userController = require('../controllers/userController');
 const settingsController = require('../controllers/settingsController');
+const orderController = require('../controllers/orderController');
+
+// 0. Public Customer Storefront Orders & Tracking
+router.post('/orders/checkout', orderController.placeCustomerOrder);
+router.get('/orders/track/:query', orderController.trackOrder);
 
 // 1. Auth
 router.post('/auth/login', authController.login);

@@ -11,12 +11,12 @@ exports.login = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Email and password are required' });
     }
 
-    const userRes = await db.query('SELECT * FROM users WHERE email = ?', [email.trim().toLowerCase()]);
-    if (userRes.rows.length === 0) {
+    const usersCol = db.getCollection('users');
+    const user = await usersCol.findOne({ email: email.trim().toLowerCase() });
+    if (!user) {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    const user = userRes.rows[0];
     if (user.status !== 'active') {
       return res.status(403).json({ success: false, message: 'Account is deactivated. Contact administrator.' });
     }
@@ -26,9 +26,8 @@ exports.login = async (req, res) => {
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
-    // Update last login
     const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
-    await db.query('UPDATE users SET last_login = ? WHERE id = ?', [now, user.id]);
+    await usersCol.updateOne({ id: user.id }, { $set: { last_login: now, updated_at: now } });
 
     const token = jwt.sign(
       { id: user.id, name: user.name, email: user.email, role: user.role },
@@ -59,14 +58,15 @@ exports.login = async (req, res) => {
 
 exports.getProfile = async (req, res) => {
   try {
-    const userRes = await db.query(
-      'SELECT id, name, email, phone, role, status, avatar_url, last_login, created_at FROM users WHERE id = ?',
-      [req.user.id]
+    const usersCol = db.getCollection('users');
+    const user = await usersCol.findOne(
+      { id: Number(req.user.id) },
+      { projection: { password_hash: 0, _id: 0 } }
     );
-    if (userRes.rows.length === 0) {
+    if (!user) {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
-    res.json({ success: true, user: userRes.rows[0] });
+    res.json({ success: true, user });
   } catch (err) {
     res.status(500).json({ success: false, message: 'Error retrieving profile' });
   }
@@ -79,8 +79,11 @@ exports.changePassword = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Password must be at least 6 characters long' });
     }
 
-    const userRes = await db.query('SELECT password_hash FROM users WHERE id = ?', [req.user.id]);
-    const user = userRes.rows[0];
+    const usersCol = db.getCollection('users');
+    const user = await usersCol.findOne({ id: Number(req.user.id) });
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
 
     const isMatch = await bcrypt.compare(currentPassword, user.password_hash);
     if (!isMatch) {
@@ -88,7 +91,11 @@ exports.changePassword = async (req, res) => {
     }
 
     const newHash = await bcrypt.hash(newPassword, 10);
-    await db.query('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, req.user.id]);
+    const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
+    await usersCol.updateOne(
+      { id: Number(req.user.id) },
+      { $set: { password_hash: newHash, updated_at: now } }
+    );
 
     await logActivity(req.user.id, 'PASSWORD_CHANGE', 'User', 'Password changed successfully');
     res.json({ success: true, message: 'Password updated successfully' });
